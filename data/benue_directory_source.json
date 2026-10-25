@@ -1,0 +1,24 @@
+{
+  "source_file": "Nigeria_polling_units.csv",
+  "source_sha256": "02dc816349ad3d0f8aa8d66e6db3b444640f7fab9494aa65544e194056a72ef6",
+  "description": "User-supplied Nigeria polling-unit CSV; publication date and current official completeness unknown.",
+  "polling_units": 1373,
+  "wards": 102,
+  "lgas": 9,
+  "by_lga": {
+    "Ado": 157,
+    "Agatu": 112,
+    "Apa": 124,
+    "Obi": 120,
+    "Ogbadibo": 142,
+    "Ohimini": 87,
+    "Oju": 204,
+    "Okpokwu": 147,
+    "Otukpo": 280
+  },
+  "voter_totals": "Not provided. Unknown totals remain NULL; no estimates or zeros are inferred.",
+  "scope": "Benue South senatorial district",
+  "upstream_repository": "smartx-web/NOPREM",
+  "upstream_commit": "d049f07a4953a2d8cd6eefddce1a04f9e195da37",
+  "upstream_directory_sha256": "34e9850c59c592ce1164be2534d325bc2a497231d9299871e06964533d5916af"
+}

@@ -1,0 +1,182 @@
+from locations import LGAS
+"""Account authentication and session management for the local development server."""
+import hashlib
+import os
+import json
+import hmac
+import secrets
+import threading
+import time
+from http.cookies import SimpleCookie, CookieError
+
+SESSION_SECONDS = 3600
+_sessions = {}
+_attempts = {}
+_lock = threading.Lock()
+
+def init(db):
+    db.execute('CREATE TABLE IF NOT EXISTS administrator (id INTEGER PRIMARY KEY CHECK(id=1), username TEXT NOT NULL, salt TEXT NOT NULL, password_hash TEXT NOT NULL)')
+    db.execute("CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,username TEXT NOT NULL UNIQUE,salt TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('admin','viewer','coordinator','agent')),lga TEXT NOT NULL DEFAULT '',wards TEXT NOT NULL DEFAULT '[]',active INTEGER NOT NULL DEFAULT 1,version INTEGER NOT NULL DEFAULT 1)")
+    # Upgrade the SQLite role constraint without changing account IDs or sessions.
+    schema=db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").fetchone()[0]
+    if "'agent'" not in schema:
+        db.execute("CREATE TABLE users_results_upgrade(id INTEGER PRIMARY KEY,username TEXT NOT NULL UNIQUE,salt TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('admin','viewer','coordinator','agent')),lga TEXT NOT NULL DEFAULT '',wards TEXT NOT NULL DEFAULT '[]',active INTEGER NOT NULL DEFAULT 1,version INTEGER NOT NULL DEFAULT 1,pu_id INTEGER)")
+        db.execute('INSERT INTO users_results_upgrade(id,username,salt,password_hash,role,lga,wards,active,version) SELECT id,username,salt,password_hash,role,lga,wards,active,version FROM users')
+        db.execute('DROP TABLE users')
+        db.execute('ALTER TABLE users_results_upgrade RENAME TO users')
+    elif not any(row['name']=='pu_id' for row in db.execute('PRAGMA table_info(users)')):
+        db.execute('ALTER TABLE users ADD COLUMN pu_id INTEGER')
+    legacy=db.execute('SELECT username,salt,password_hash FROM administrator WHERE id=1').fetchone()
+    if legacy and not db.execute('SELECT 1 FROM users LIMIT 1').fetchone():
+        db.execute("INSERT INTO users(username,salt,password_hash,role) VALUES(?,?,?,'admin')",tuple(legacy))
+
+def password_hash(password, salt):
+    return hashlib.pbkdf2_hmac('sha256',password.encode(),bytes.fromhex(salt),600000).hex()
+
+def configure(db, username, password):
+    username=username.strip()
+    if not username or len(username)>100: raise ValueError('Username must be 1–100 characters.')
+    if len(password)<12 or len(password)>1024: raise ValueError('Use a password of 12–1024 characters.')
+    salt=secrets.token_hex(16)
+    db.execute('INSERT INTO administrator(id,username,salt,password_hash) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username,salt=excluded.salt,password_hash=excluded.password_hash',(username,salt,password_hash(password,salt)))
+    row=db.execute('SELECT id FROM users WHERE username=?',(username,)).fetchone()
+    if row:
+        db.execute("UPDATE users SET salt=?,password_hash=?,role='admin',lga='',wards='[]',pu_id=NULL,active=1,version=version+1 WHERE id=?",(salt,password_hash(password,salt),row[0]))
+    else:
+        db.execute("INSERT INTO users(username,salt,password_hash,role) VALUES(?,?,?,'admin')",(username,salt,password_hash(password,salt)))
+    with _lock: _sessions.clear()
+
+def account_key(row):
+    return hashlib.sha256((str(row['id'])+':'+row['salt']).encode()).hexdigest()
+
+def user_snapshot(row):
+    if not row: return None
+    result={key:row[key] for key in ('id','username','role','lga','active','version')}
+    result['account_key']=account_key(row)
+    result['pu_id']=row['pu_id']
+    result['wards']=json.loads(row['wards'])
+    return result
+
+def authenticate(db,username,password):
+    row=db.execute('SELECT * FROM users WHERE username=?',(username,)).fetchone()
+    candidate=password_hash(password,row['salt'] if row else '00'*16)
+    if not row or not row['active'] or not hmac.compare_digest(candidate,row['password_hash']): return None
+    return user_snapshot(row)
+
+def session_user(db,session):
+    if not session or not session.get('authenticated') or not session.get('user_id'): return None
+    row=db.execute('SELECT * FROM users WHERE id=?',(session['user_id'],)).fetchone()
+    if not row or not row['active'] or row['version']!=session.get('user_version') or account_key(row)!=session.get('account_key'): return None
+    return user_snapshot(row)
+
+def manage_account(db,data,actor_id):
+    username=data.get('username','').strip()
+    role=data.get('role','');lga=data.get('lga','').strip()
+    wards=sorted(set(w.strip() for w in data.get('wards','').splitlines() if w.strip()))
+    password=data.get('password','')
+    active=data.get('active')=='yes'
+    record_id=int(data['id']) if data.get('id') else None
+    if not username or len(username)>100 or role not in ('admin','viewer','coordinator','agent'): raise ValueError('Choose a valid username and role.')
+    pu_id=None
+    if role=='agent':
+        try: pu_id=int(data.get('pu_id',''))
+        except (ValueError,TypeError): raise ValueError('Assign the agent to a polling unit.')
+        if not 0<pu_id<2**63: raise ValueError('Choose a valid polling unit.')
+        if not db.execute('SELECT 1 FROM pus WHERE id=?',(pu_id,)).fetchone(): raise ValueError('Polling unit does not exist.')
+    if role=='coordinator':
+        if lga not in LGAS: raise ValueError('Choose the coordinator LGA.')
+        known={r[0] for r in db.execute('SELECT DISTINCT ward FROM pus WHERE lga=?',(lga,))}
+        if any(w not in known for w in wards): raise ValueError('Ward names must match the directory exactly, one per line.')
+    else: lga='';wards=[]
+    if record_id is not None and record_id==actor_id and (role!='admin' or not active): raise ValueError('You cannot disable or demote your own administrator account.')
+    old=db.execute('SELECT * FROM users WHERE id=?',(record_id,)).fetchone() if record_id else None
+    if record_id and not old: raise ValueError('Account does not exist.')
+    if old and old['username']!=username: raise ValueError('Existing usernames cannot be changed.')
+    if old and old['role']=='admin' and old['active'] and (role!='admin' or not active):
+        if db.execute("SELECT COUNT(*) FROM users WHERE role='admin' AND active=1").fetchone()[0]<=1: raise ValueError('Keep at least one active administrator.')
+    if (not old or password) and not 12<=len(password)<=1024: raise ValueError('Use a password of 12–1024 characters.')
+    if old:
+        salt=secrets.token_hex(16) if password else old['salt']
+        hashed=password_hash(password,salt) if password else old['password_hash']
+        db.execute('UPDATE users SET role=?,lga=?,wards=?,active=?,salt=?,password_hash=?,pu_id=?,version=version+1 WHERE id=?',(role,lga,json.dumps(wards),int(active),salt,hashed,pu_id,record_id))
+    else:
+        salt=secrets.token_hex(16)
+        cursor=db.execute('INSERT INTO users(username,salt,password_hash,role,lga,wards,active,pu_id) VALUES(?,?,?,?,?,?,?,?) RETURNING id',(username,salt,password_hash(password,salt),role,lga,json.dumps(wards),int(active),pu_id))
+        record_id=cursor.fetchone()[0]
+    return record_id
+
+def delete_account(db,data,actor_id):
+    """Remove a non-admin login; caller owns the write transaction and permission check."""
+    if data.get('confirmed')!='yes': raise ValueError('Confirm permanent deletion of this account.')
+    try:
+        record_id=int(data.get('id',''))
+        version=int(data.get('version',''))
+    except (ValueError,TypeError): raise ValueError('Choose a valid account to delete.')
+    if not 0<record_id<2**63: raise ValueError('Choose a valid account to delete.')
+    row=db.execute('SELECT id,username,role,version,salt FROM users WHERE id=?',(record_id,)).fetchone()
+    if not row: raise ValueError('Account no longer exists.')
+    if row['role']=='admin' or record_id==actor_id: raise ValueError('Administrator accounts cannot be deleted here.')
+    if row['username']!=data.get('username') or row['version']!=version or account_key(row)!=data.get('account_key'):
+        raise ValueError('This account has changed. Refresh Accounts before deleting it.')
+    db.execute('DELETE FROM users WHERE id=?',(record_id,))
+    return {key:row[key] for key in ('id','username','role')}
+
+def revoke_user(user_id):
+    # Remove tokens too: SQLite may reuse a deleted highest row ID for a new user.
+    with _lock:
+        for token in list(_sessions):
+            if _sessions[token].get('user_id')==user_id: del _sessions[token]
+
+
+def verify(db, username, password):
+    return authenticate(db,username,password) is not None
+
+
+def new_session(authenticated=False,user=None):
+    token=secrets.token_urlsafe(32)
+    session={'csrf':secrets.token_urlsafe(32),'authenticated':authenticated,'expires':time.monotonic()+SESSION_SECONDS}
+    if user:
+        session['user_id']=user['id'];session['user_version']=user['version'];session['account_key']=user.get('account_key','')
+    with _lock:
+        now=time.monotonic()
+        for key in list(_sessions):
+            if _sessions[key]['expires']<=now: del _sessions[key]
+        if len(_sessions)>=1000: del _sessions[next(iter(_sessions))]
+        _sessions[token]=session
+    return token,session
+
+def get_session(header):
+    try:
+        cookie=SimpleCookie(); cookie.load(header or '')
+        token=cookie['senate_movement_session'].value if 'senate_movement_session' in cookie else ''
+    except CookieError: return '',None
+    with _lock:
+        session=_sessions.get(token)
+        if session and session['expires']>time.monotonic(): return token,session.copy()
+        _sessions.pop(token,None)
+    return '',None
+
+def revoke(token):
+    with _lock: _sessions.pop(token,None)
+
+def allow_attempt(address,username=''):
+    # A shared hosting proxy must not make five logins lock out every account.
+    with _lock:
+        now=time.monotonic()
+        for key in list(_attempts):
+            if _attempts[key][1]<=now: del _attempts[key]
+        keys=[(('network',address),50),(('account',username),5)] if username else [(('legacy',address),5)]
+        if any(_attempts.get(key,(0,0))[0]>=limit for key,limit in keys):return False
+        for key,_ in keys:
+            count,until=_attempts.get(key,(0,now+300));_attempts[key]=(count+1,until)
+        return True
+
+
+def cookie(token):
+    return f'senate_movement_session={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_SECONDS if token else 0}'+('; Secure' if os.environ.get('SENATE_MOVEMENT_ENV')=='production' else '')
+
+def login_page(csrf,message=''):
+    import html
+    return '''<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Sign in · Senate Movement for Olofu 2027</title><style>
+    body{background:#edf3f1;color:#17352d;font:16px system-ui;margin:0;padding:20px}main{max-width:400px;margin:8vh auto;background:white;padding:32px;border-radius:16px}label{display:block;margin:20px 0}input,button{box-sizing:border-box;width:100%;padding:12px;margin-top:8px;font:inherit;border:1px solid #a6bcb4;border-radius:6px}button{background:#096553;color:white}a{color:#096553}
+    </style><link rel="stylesheet" href="/portal.css"><body class="login-body"><div class="login-portrait branding-placeholder" aria-hidden="true"><span>SENATE<br>MOVEMENT<br><strong>OLOFU 2027</strong></span></div><main class="login-shell"><div class="login-brand"><small>BENUE SOUTH / COORDINATION PORTAL</small><h1>Senate Movement<br>for Olofu 2027<span style="color:#d6bd81">.</span></h1><div class="rule"></div><p>Olofu 2027 · Benue South coordination</p><p>Polling units, agent assignments and field reports in one organised workspace.</p></div><div class="login-card"><h2>Welcome back</h2><p>Sign in to your coordination workspace.</p><p role="alert">'''+html.escape(message)+'''</p><form method="post" action="/login"><input type="hidden" name="csrf" value="'''+csrf+'''"><label>Username<input name="username" autocomplete="username" required maxlength="100"></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="1024"></label><button>Sign in</button></form><p class="access-note">Authorised personnel only · Access is managed by your portal administrator.</p></div></main></body></html>'''
