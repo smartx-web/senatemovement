@@ -66,7 +66,7 @@ class DistrictTests(unittest.TestCase):
         page = app.page()
         self.assertIn('Senate Movement for Olofu 2027', page)
         self.assertIn('Apa and Agatu only', page)
-        self.assertIn('Official portrait or logo to be supplied', page)
+        self.assertIn('/assets/olofu-frontpage.jpg', page)
         for lga in LGAS:
             self.assertIn(f'value="{lga}"', page)
         login = auth.login_page('sample-csrf')

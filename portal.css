@@ -156,3 +156,26 @@ input:focus, select:focus, textarea:focus { outline: 2px solid #44856c; outline-
 .hero-portrait.branding-placeholder > span { font-size: 29px; padding: 18px; }
 .hero-portrait.branding-placeholder strong { display: block; font-size: 22px; margin-top: 10px; }
 .login-portrait.branding-placeholder > span { font-size: clamp(28px, 5vw, 64px); }
+
+/* Owner-supplied photography: first image as backdrop, second as the lead image. */
+.login-body {
+  background: #0b302a url('/assets/olofu-background.jpg') center 28% / cover no-repeat;
+}
+.login-body::after {
+  background: linear-gradient(90deg, #072b25ed 0%, #072b25ba 55%, #072b2575 100%);
+}
+.portal-body {
+  background: linear-gradient(#092a23db, #092a23eb), url('/assets/olofu-background.jpg') center top / cover fixed no-repeat;
+}
+.portal-hero {
+  background: linear-gradient(90deg, #092a23f2 0%, #092a23c9 55%, #092a2370 100%), url('/assets/olofu-background.jpg') center 30% / cover no-repeat;
+}
+.hero-portrait { flex-basis: 340px; height: 300px; border-radius: 18px 18px 0 0; }
+.hero-portrait img { width: 100%; height: 100%; object-fit: cover; object-position: 48% 25%; transform: none; }
+.hero-portrait::after { background: linear-gradient(0deg, #163b2e88, transparent 40%); }
+.login-frontpage { display: block; width: 100%; max-width: 410px; height: 220px; object-fit: cover; object-position: center 28%; border: 1px solid #e3cf9b77; border-radius: 14px; margin-bottom: 24px; box-shadow: 0 12px 36px #001a2250; }
+@media (max-width: 760px) {
+  .hero-portrait { flex-basis: 30%; height: 200px; margin: 0 0 -28px 10px; }
+  .login-frontpage { height: 180px; margin-bottom: 20px; }
+  .portal-body { background-attachment: scroll; }
+}

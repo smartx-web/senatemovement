@@ -65,7 +65,7 @@ Do not point this portal at the original portal's database. Use separate credent
 
 ## Pending information
 
-- Portrait, logo and any additional photos, reserved for the owner. The display name is Senate Movement for Olofu 2027.
+- Any additional logo or photos, reserved for the owner. The display name is Senate Movement for Olofu 2027.
 - Any approved district historical voter totals; the location directory is now loaded.
 - Intended administrator and account scopes, configured securely outside chat.
 - Hosting service and a separate persistent database before deployment.

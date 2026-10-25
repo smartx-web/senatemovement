@@ -391,7 +391,7 @@ def delete_account(data):
 
 def portal_header(title='Senate Movement for Olofu 2027',description='Polling units, agent assignments and field reports in one place.'):
     destination,label=('/', 'Back to dashboard') if title=='PU Results' else ('/results', 'Open PU Results')
-    return '<header class="portal-hero"><div class="hero-copy"><span class="hero-eyebrow">BENUE SOUTH / COORDINATION PORTAL</span><h1>'+esc(title)+'</h1><p class="hero-name">Olofu 2027 · Benue South coordination</p><p class="hero-description">'+esc(description)+'</p><a class="hero-action" href="'+destination+'">'+label+'</a></div><div class="hero-portrait branding-placeholder"><span>SENATE<br>MOVEMENT<br><strong>OLOFU 2027</strong><small>Official portrait or logo to be supplied</small></span></div><span class="hero-watermark" aria-hidden="true">2027</span></header>'
+    return '<header class="portal-hero"><div class="hero-copy"><span class="hero-eyebrow">BENUE SOUTH / COORDINATION PORTAL</span><h1>'+esc(title)+'</h1><p class="hero-name">Olofu 2027 · Benue South coordination</p><p class="hero-description">'+esc(description)+'</p><a class="hero-action" href="'+destination+'">'+label+'</a></div><div class="hero-portrait"><img src="/assets/olofu-frontpage.jpg" alt="Olofu speaking at an event"></div><span class="hero-watermark" aria-hidden="true">2027</span></header>'
 
 
 def page(message='',extra='',filters=None):
@@ -452,7 +452,11 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(403,'<!doctype html><title>Access denied</title><h1>Access denied</h1><p>'+esc(error)+'</p><a href="/">Return to portal</a>')
         finally: access.current_user.reset(context)
     def do_GET(self):
-        public={'/portal.css':('portal.css','text/css; charset=utf-8')}
+        public={
+            '/portal.css':('portal.css','text/css; charset=utf-8'),
+            '/assets/olofu-background.jpg':('assets/olofu-background.jpg','image/jpeg'),
+            '/assets/olofu-frontpage.jpg':('assets/olofu-frontpage.jpg','image/jpeg'),
+        }
         asset=public.get(urlsplit(self.path).path)
         if asset:
             self.respond(200,(Path(__file__).parent/asset[0]).read_bytes(),content_type=asset[1]);return
